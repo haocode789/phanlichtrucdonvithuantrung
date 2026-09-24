@@ -1,0 +1,14 @@
+{
+  "name": "quan-ly-lich-truc-cax",
+  "version": "1.0.0",
+  "description": "Phần mềm tổng hợp và phân lịch trực ban Công an xã",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0"
+  }
+}
