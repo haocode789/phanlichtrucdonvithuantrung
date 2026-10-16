@@ -485,10 +485,12 @@ async function isLocked(week, year) {
 // ================= RÀNG BUỘC CỨNG KHI PHÂN CA TRỰC BAN =================
 // Thứ tự kiểm tra (không có nới lỏng/fallback):
 //  1) số ca tối đa = 0 -> loại   2) bị đánh dấu "Không trực" ở ngày/ca -> loại
-//  3) Ca 2, Ca 3 (và cả 3 ca của T7/CN) -> phải có tên trong lịch trực chiến của CHÍNH ngày đó
+//  3) Cả Ca 1, Ca 2, Ca 3 (mọi ngày) -> phải có tên trong lịch trực chiến của CHÍNH ngày đó (Ca 1 thứ 2–6 có thể tắt bằng ràng buộc 'roster_all_shifts')
 //  4) ca phải nằm trong phạm vi được phép trực (ca được phép của cán bộ + các ô ✅ "có thể trực" nếu có cài)
 //  5) số ca tối đa trong tuần (kiểm tra theo số ca đã xếp)
-const needsDutyRoster = (d, sh) => sh !== 1 || d >= 5;
+// Mặc định (ràng buộc 'roster_all_shifts' đang bật): CẢ 3 ca đều phải lấy người có tên trong lịch trực chiến của đúng ngày đó.
+// Nếu admin tắt 'roster_all_shifts' thì Ca 1 thứ 2–thứ 6 được lấy ngoài lịch trực chiến (như trước).
+const needsDutyRoster = (d, sh, off = NO_OFF) => sh !== 1 || d >= 5 || !off.has('roster_all_shifts');
 // Quy tắc 2 ca trong tuần: tối đa 2 ca/người/tuần; chỉ được các cặp Ca1+Ca3, Ca2+Ca3, Ca3+Ca3 (cấm Ca1+Ca1, Ca1+Ca2, Ca2+Ca2)
 // và 2 ngày trực phải cách nhau tối thiểu 1 ngày (tức chênh nhau từ 2 ngày trở lên, ví dụ T2 và T4).
 const MAX_WEEK_SHIFTS = 2, MIN_DAY_GAP = 2;
@@ -506,6 +508,7 @@ const CONSTRAINTS = [
   { id: 'max_zero', kind: 'hard', title: 'Loại cán bộ có số ca tối đa = 0', desc: 'Cán bộ được admin đặt số ca trực ban tối đa bằng 0 sẽ không được xếp bất kỳ ca nào.' },
   { id: 'block_cells', kind: 'hard', title: 'Ô đánh dấu "Không trực" là tuyệt đối', desc: 'Ô ⛔ Không trực của cán bộ (theo ngày/ca) không bao giờ được phân, kể cả khi thiếu người.' },
   { id: 'roster_required', kind: 'hard', title: 'Phải có tên trong lịch trực chiến của đúng ngày đó', desc: 'Ca 2, Ca 3 (và cả 3 ca của Thứ 7, Chủ nhật) chỉ phân cho người có tên trong lịch trực chiến của chính ngày đó; không có người thì để trống và cảnh báo.' },
+  { id: 'roster_all_shifts', kind: 'hard', title: 'Cả Ca 1, Ca 2, Ca 3 đều lấy người trong lịch trực chiến', desc: 'Ca 1 (thứ 2–thứ 6) cũng chỉ phân cho người có tên trong lịch trực chiến của chính ngày đó, giống Ca 2, Ca 3. Không có người thì để trống và cảnh báo. Tắt mục này thì Ca 1 thứ 2–thứ 6 được lấy cả người ngoài lịch trực chiến.' },
   { id: 'allowed_shifts', kind: 'hard', title: 'Chỉ phân vào ca được phép của cán bộ', desc: 'Chỉ xếp cán bộ vào các ca được chọn "có thể trực" (Ca 1/2/3 của cán bộ) và các ô ✅ có thể trực nếu admin có cài.' },
   { id: 'ca1_consecutive', kind: 'hard', title: 'Không trực Ca 1 hai tuần liên tiếp', desc: 'Người đã trực Ca 1 ở tuần liền trước thì tuần này không được xếp Ca 1.' },
   { id: 'week_cap', kind: 'hard', title: 'Giới hạn số ca trong tuần', desc: 'Mỗi người tối đa 2 ca/tuần và không vượt số ca tối đa riêng của cán bộ (mặc định 2).' },
@@ -556,7 +559,7 @@ async function loadDutyContext(week, year) {
     if (!info.has(n)) return `${n} không có trong danh sách cán bộ`;
     if (!off.has('max_zero') && maxOf(n) < 1) return `${n} có số ca trực ban tối đa = 0`;
     if (!off.has('block_cells') && blocked.has(`${n}|${d}|${sh}`)) return `${n} được đánh dấu Không trực ${DAY_NAME[d]} ${SHIFT_NAME[sh]}`;
-    if (!off.has('roster_required') && needsDutyRoster(d, sh) && !roster[d].has(n)) return `${n} không có tên trong lịch trực chiến ${DAY_NAME[d]} nên không được xếp ${SHIFT_NAME[sh]}`;
+    if (!off.has('roster_required') && needsDutyRoster(d, sh, off) && !roster[d].has(n)) return `${n} không có tên trong lịch trực chiến ${DAY_NAME[d]} nên không được xếp ${SHIFT_NAME[sh]}`;
     if (!off.has('allowed_shifts') && !allowedOf(n).includes(sh)) return `${SHIFT_NAME[sh]} không nằm trong các ca ${n} được phép trực`;
     if (!off.has('ca1_consecutive') && sh === 1 && ca1Prev.has(n)) return `${n} đã trực Ca 1 ở tuần liền trước (tuần ${pw.week}/${pw.year}) nên không được trực Ca 1 hai tuần liên tiếp`;
     const cc = canCells.get(n);
@@ -632,7 +635,7 @@ app.post('/api/duty/generate', requireAdmin, async (req, res) => {
     // Nhóm người "thuộc diện" từng ca dùng để đo độ cân bằng: ca 2, 3 chỉ tính người có lịch trực chiến tuần này
     const roster = new Set(duty.map(r => r.officer_name));
     const elig = { 1: [], 2: [], 3: [] };
-    pool.forEach(n => [1, 2, 3].forEach(s => { if ((off.has('allowed_shifts') || allowed(n).includes(s)) && (off.has('max_zero') || maxOf(n) > 0) && (s === 1 || off.has('roster_required') || roster.has(n))) elig[s].push(n); }));
+    pool.forEach(n => [1, 2, 3].forEach(s => { if ((off.has('allowed_shifts') || allowed(n).includes(s)) && (off.has('max_zero') || maxOf(n) > 0) && ((s === 1 && off.has('roster_all_shifts')) || off.has('roster_required') || roster.has(n))) elig[s].push(n); }));
     const onDutyBy = [];
     for (let d = 0; d < 7; d++) onDutyBy.push([...new Set(duty.filter(r => Number(r.day_index) === d).map(r => r.officer_name))]);
     const r1 = x => Math.round(x * 10) / 10;
@@ -679,7 +682,7 @@ app.post('/api/duty/generate', requireAdmin, async (req, res) => {
         const r = pick(d, sh);
         if (r) { place(d, sh, r); continue; }
         const ds = dateStr(year, week, d);
-        const why = !off.has('roster_required') && needsDutyRoster(d, sh) && !ctx.roster[d].size
+        const why = !off.has('roster_required') && needsDutyRoster(d, sh, off) && !ctx.roster[d].size
           ? `${DAY_NAME[d]} chưa có ai trong lịch trực chiến`
           : 'mọi người hợp lệ đều đã bị loại (Không trực, ngoài ca được phép, Ca 1 tuần liền trước, đã đủ số ca tối đa hoặc không đúng quy tắc cặp ca/khoảng cách ngày)';
         pen('unfilled', PEN.UNFILLED, `Chưa phân được ${SHIFT_NAME[sh]} ${DAY_NAME[d]} (${ds}): không còn người hợp lệ — ${why}`, d, sh);
