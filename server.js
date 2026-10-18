@@ -1,6 +1,6 @@
 const express = require('express');
 const session = require('express-session');
-const { createClient } = require('@libsql/client');
+const { createClient } = require('@libsql/client/web');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -8,9 +8,12 @@ const path = require('path');
 const app = express();
 app.set('trust proxy', 1);
 
+if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) {
+  console.error('❌ LỖI: Chưa cấu hình TURSO_DATABASE_URL hoặc TURSO_AUTH_TOKEN!');
+}
 const db = createClient({
-  url: process.env.TURSO_DATABASE_URL || 'file:local.db',
-  authToken: process.env.TURSO_AUTH_TOKEN,
+  url: (process.env.TURSO_DATABASE_URL || '').trim(),
+  authToken: (process.env.TURSO_AUTH_TOKEN || '').trim(),
 });
 
 // ================= TIỆN ÍCH =================
@@ -228,6 +231,20 @@ app.use(express.static(publicDir));
 app.get('/', (req, res) => {
   const p = fs.existsSync(path.join(publicDir, 'index.html')) ? path.join(publicDir, 'index.html') : path.join(__dirname, 'index.html');
   res.sendFile(p);
+});
+
+// Vercel (serverless): khởi tạo CSDL 1 lần; các request /api chờ xong rồi mới chạy (phải đặt TRƯỚC session vì phiên lưu trong Turso)
+let dbReady = null;
+app.use('/api', async (req, res, next) => {
+  try {
+    if (!dbReady) dbReady = initDB();
+    await dbReady;
+    next();
+  } catch (err) {
+    dbReady = null; // lần sau thử lại
+    console.error('Lỗi khởi tạo CSDL:', err);
+    res.status(500).json({ error: 'Lỗi kết nối CSDL: ' + (err && err.message ? err.message : '') });
+  }
 });
 
 app.use(session({
@@ -1153,7 +1170,12 @@ app.put('/api/constraints', requireAdmin, async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Không thể lưu ràng buộc' }); }
 });
 
-const PORT = process.env.PORT || 3000;
-initDB()
-  .then(() => app.listen(PORT, () => console.log(`Server CAX đang chạy tại port ${PORT}`)))
-  .catch(err => { console.error('Lỗi khởi tạo CSDL:', err); process.exit(1); });
+// Vercel: export app. Chạy trên máy/Render: vẫn listen như bình thường.
+module.exports = app;
+
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  initDB()
+    .then(() => app.listen(PORT, () => console.log(`Server CAX đang chạy tại port ${PORT}`)))
+    .catch(err => { console.error('Lỗi khởi tạo CSDL:', err); process.exit(1); });
+}
